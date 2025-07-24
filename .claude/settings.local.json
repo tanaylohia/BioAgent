@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test:*)",
+      "Bash(py test_search.py)",
+      "Bash(pip install:*)",
+      "Bash(py -m pip install:*)",
+      "Bash(py:*)",
+      "Bash(curl:*)",
+      "Bash(find:*)",
+      "Bash(npm install:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(start \"Orchestrator Test\" cmd /k \"py test_orchestrator.py\")",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(dir:*)",
+      "Bash(cmd /c:*)",
+      "Bash(if exist nul del nul)",
+      "Bash(del:*)",
+      "Bash(rm:*)",
+      "Bash(cat:*)",
+      "Bash(restart_backend.bat)",
+      "Bash(taskkill:*)",
+      "Bash(powershell:*)",
+      "WebFetch(domain:api.biorxiv.org)",
+      "Bash(where python)",
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": []
+  }
+}
