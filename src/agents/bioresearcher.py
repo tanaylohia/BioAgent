@@ -19,6 +19,7 @@ from src.tools.tool_definitions import TOOL_DEFINITIONS
 from src.tools import search_tools
 from src.models.paper import Paper
 from prompts import BIORESEARCHER_PROMPT
+from src.utils.raw_logger import log_method_call, log_method_result, log_openai_request, log_openai_response, log_raw
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +49,12 @@ class BioResearcher:
         self.deployment = deployment
         
         # Map function names to actual implementations
+        # AIDEV-NOTE: OpenAlex and PubMed Direct are now primary sources
         self.tool_functions = {
+            "search_openalex": search_tools.search_openalex,
+            "search_pubmed_direct": search_tools.search_pubmed_direct,
             "google_academic_search": search_tools.google_academic_search,
             "search_papers": search_tools.search_papers,
-            "fetch_paper_details": search_tools.fetch_paper_details,
             "search_by_topic": search_tools.search_by_topic,
             "search_pubmed": search_tools.search_pubmed,
             "search_preprints": search_tools.search_preprints,
@@ -62,6 +65,9 @@ class BioResearcher:
     async def search(self, query: str) -> Dict[str, Any]:
         """Execute comprehensive search using OpenAI function calling"""
         logger.info(f"BioResearcher: Starting search for '{query}'")
+        
+        # Log method call
+        log_method_call("BioResearcher", "search", {"query": query})
         
         # Initialize conversation with the query
         messages = [
@@ -81,6 +87,9 @@ class BioResearcher:
         # Allow up to 3 rounds of tool calls (reduced from 5)
         for round in range(3):
             try:
+                # Log OpenAI request
+                log_openai_request("BioResearcher", self.deployment, messages, TOOL_DEFINITIONS)
+                
                 # Make API call with function calling
                 # AIDEV-NOTE: Fixed to use async client to prevent event loop blocking
                 response = await self.client.chat.completions.create(
@@ -91,6 +100,9 @@ class BioResearcher:
                     temperature=1.0,  # gpt-4.1 only supports default temperature
                     max_completion_tokens=800  # As per Azure guide for gpt-4.1
                 )
+                
+                # Log OpenAI response
+                log_openai_response("BioResearcher", self.deployment, response)
                 
                 message = response.choices[0].message
                 
@@ -150,6 +162,19 @@ class BioResearcher:
         
         # Deduplicate papers
         all_results["papers"] = self._deduplicate_papers(all_results["papers"])
+        
+        # Generate comprehensive research output text
+        all_results["researcher_output"] = self._generate_research_dump(
+            query, all_results["papers"], all_results["raw_searches"], all_results["analysis"]
+        )
+        
+        # Log method result
+        log_method_result("BioResearcher", "search", {
+            "papers_found": len(all_results["papers"]),
+            "tool_calls_made": len(all_results["tool_calls"]),
+            "reasoning_rounds": len(all_results["reasoning_trace"]),
+            "output_length": len(all_results["researcher_output"])
+        })
         
         return all_results
     
@@ -311,3 +336,70 @@ class BioResearcher:
                 unique_papers.append(paper)
         
         return unique_papers
+    
+    def _generate_research_dump(self, query: str, papers: List[Paper], 
+                               raw_searches: Dict[str, Any], analysis: str) -> str:
+        """Generate comprehensive research output text with all abstracts and findings"""
+        output_sections = []
+        
+        # Header
+        output_sections.append(f"# COMPREHENSIVE RESEARCH DUMP FOR: {query}\n")
+        output_sections.append(f"## Total Papers Found: {len(papers)}\n")
+        
+        # AI Analysis if available
+        if analysis:
+            output_sections.append("## AI ANALYSIS AND SYNTHESIS\n")
+            output_sections.append(analysis)
+            output_sections.append("\n" + "="*80 + "\n")
+        
+        # Detailed Paper Abstracts Section
+        output_sections.append("## DETAILED PAPER ABSTRACTS AND FINDINGS\n")
+        
+        for i, paper in enumerate(papers, 1):
+            output_sections.append(f"\n### Paper {i}: {paper.title}")
+            
+            # Authors
+            if paper.authors:
+                output_sections.append(f"**Authors**: {', '.join(paper.authors[:10])}")
+            
+            # Publication info
+            if paper.publication_date:
+                output_sections.append(f"**Year**: {paper.publication_date}")
+            if paper.journal:
+                output_sections.append(f"**Journal**: {paper.journal}")
+            if paper.doi:
+                output_sections.append(f"**DOI**: {paper.doi}")
+            if paper.hyperlink:
+                output_sections.append(f"**URL**: {paper.hyperlink}")
+            
+            # Abstract - THE MOST IMPORTANT PART
+            if paper.abstract:
+                output_sections.append(f"\n**ABSTRACT**:\n{paper.abstract}")
+            else:
+                output_sections.append(f"\n**ABSTRACT**: Not available")
+            
+            # Citations if available
+            if hasattr(paper, 'citations') and paper.citations:
+                output_sections.append(f"\n**Citations**: {paper.citations}")
+            
+            output_sections.append("\n" + "-"*60)
+        
+        # Raw search results for additional context
+        output_sections.append("\n\n## RAW SEARCH RESULTS BY DATABASE\n")
+        
+        for search_key, results in raw_searches.items():
+            if isinstance(results, dict) and "results" in results:
+                output_sections.append(f"\n### {search_key}")
+                output_sections.append(f"Results count: {len(results.get('results', []))}")
+                
+                # Include any additional abstracts from raw results that might have been missed
+                for item in results.get("results", [])[:5]:  # First 5 from each source
+                    if isinstance(item, dict):
+                        abstract = item.get("abstract") or item.get("abstractText") or item.get("summary")
+                        if abstract and len(abstract) > 100:  # Only include substantial abstracts
+                            title = item.get("title", "Unknown title")
+                            output_sections.append(f"\n**Additional Abstract - {title}**:")
+                            output_sections.append(abstract)
+        
+        # Join all sections
+        return "\n".join(output_sections)

@@ -23,3 +23,4 @@ class AnalysisCache(BaseModel):
     previous_output: str
     missing_analysis: str
     updated_results: Optional[Dict[str, Any]] = None
+    initial_research_output: Optional[str] = None  # Full initial research output

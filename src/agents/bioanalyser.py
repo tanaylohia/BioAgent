@@ -15,6 +15,7 @@ load_dotenv()
 
 from src.models.search import AnalysisCache
 from prompts import BIOANALYSER_PROMPT
+from src.utils.raw_logger import log_method_call, log_method_result, log_openai_request, log_openai_response
 
 logger = logging.getLogger(__name__)
 
@@ -42,26 +43,44 @@ class BioAnalyser:
     
     async def analyze(self, query: str, research_data: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze if research satisfies the query"""
-        # Prepare research summary
-        papers_summary = self._summarize_papers(research_data.get("papers", []))
+        # Log method call
+        log_method_call("BioAnalyser", "analyze", {
+            "query": query,
+            "papers_count": len(research_data.get("papers", []))
+        })
         
-        response = await self.client.chat.completions.create(
-            model=self.deployment,
-            messages=[
-                {"role": "system", "content": BIOANALYSER_PROMPT},
-                {"role": "user", "content": f"""
+        # Use comprehensive researcher output if available, otherwise fall back to paper summary
+        if research_data.get("researcher_output"):
+            research_content = research_data["researcher_output"]
+            content_type = "Comprehensive Research Dump"
+        else:
+            research_content = self._summarize_papers(research_data.get("papers", []))
+            content_type = "Paper Summary"
+        
+        # Log OpenAI request
+        messages = [
+            {"role": "system", "content": BIOANALYSER_PROMPT},
+            {"role": "user", "content": f"""
 User Query: {query}
 
-Research Results:
-{papers_summary}
+{content_type}:
+{research_content}
 
 Total papers found: {len(research_data.get('papers', []))}
 
-Analyze if this satisfies the query. Follow the output format specified."""}
-            ],
+Analyze if this comprehensive research satisfies the query. Follow the output format specified."""}
+        ]
+        log_openai_request("BioAnalyser", self.deployment, messages)
+        
+        response = await self.client.chat.completions.create(
+            model=self.deployment,
+            messages=messages,
             temperature=1.0,  # Use default temperature
             max_completion_tokens=100000  # As per Azure guide for o4-mini
         )
+        
+        # Log OpenAI response
+        log_openai_response("BioAnalyser", self.deployment, response)
         
         # Parse response
         content = response.choices[0].message.content
@@ -78,7 +97,9 @@ Analyze if this satisfies the query. Follow the output format specified."""}
                 result["satisfied"] = "YES" in line
             elif line.startswith("ANALYSIS:"):
                 result["analysis"] = line.replace("ANALYSIS:", "").strip()
-            elif line.startswith("MISSING_INFO:"):
+            elif line.startswith("CRITICAL_MISSING_INFO:"):
+                result["missing_info"] = line.replace("CRITICAL_MISSING_INFO:", "").strip()
+            elif line.startswith("MISSING_INFO:"):  # Keep backward compatibility
                 result["missing_info"] = line.replace("MISSING_INFO:", "").strip()
         
         # Get full analysis text
@@ -86,16 +107,40 @@ Analyze if this satisfies the query. Follow the output format specified."""}
             parts = content.split("ANALYSIS:")
             if len(parts) > 1:
                 analysis_part = parts[1]
-                # Check if MISSING_INFO exists before splitting
-                if "MISSING_INFO:" in analysis_part:
+                # Check if CRITICAL_MISSING_INFO or MISSING_INFO exists before splitting
+                if "CRITICAL_MISSING_INFO:" in analysis_part:
+                    result["analysis"] = analysis_part.split("CRITICAL_MISSING_INFO:")[0].strip()
+                elif "MISSING_INFO:" in analysis_part:
                     result["analysis"] = analysis_part.split("MISSING_INFO:")[0].strip()
                 else:
                     result["analysis"] = analysis_part.strip()
+        
+        # AIDEV-NOTE: Extract 100-word critical missing info excerpt for proper handoff to researcher
+        # Get full critical missing info text  
+        if "CRITICAL_MISSING_INFO:" in content:
+            parts = content.split("CRITICAL_MISSING_INFO:")
+            if len(parts) > 1:
+                result["missing_info"] = parts[1].strip()
+        
+        # Log method result
+        log_method_result("BioAnalyser", "analyze", result)
         
         return result
     
     async def analyze_with_cache(self, cache: AnalysisCache) -> Dict[str, Any]:
         """Final analysis with cached context and new results"""
+        # Use full researcher output if available
+        additional_content = ""
+        if cache.updated_results and cache.updated_results.get("researcher_output"):
+            additional_content = f"Additional Research Output:\n{cache.updated_results['researcher_output']}"
+        else:
+            additional_content = f"Additional Papers Summary:\n{self._summarize_papers(cache.updated_results.get('papers', []))}"
+        
+        # Include initial research output if available
+        initial_research = ""
+        if cache.initial_research_output:
+            initial_research = f"Initial Research Output:\n{cache.initial_research_output}\n\n"
+        
         response = await self.client.chat.completions.create(
             model=self.deployment,
             messages=[
@@ -103,12 +148,13 @@ Analyze if this satisfies the query. Follow the output format specified."""}
                 {"role": "user", "content": f"""
 User Query: {cache.user_query}
 
-Previous Analysis: {cache.previous_output}
+{initial_research}Previous Analysis: {cache.previous_output}
 
 Missing Information Requested: {cache.missing_analysis}
 
-Additional Results Found:
-{self._summarize_papers(cache.updated_results.get('papers', []))}
+{additional_content}
+
+Total papers found: {len(cache.updated_results.get('papers', [])) if cache.updated_results else 0} additional papers
 
 Provide final comprehensive analysis combining all information."""}
             ],

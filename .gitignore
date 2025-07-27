@@ -61,3 +61,19 @@ results/
 # Lock files (keeping package-lock.json but not others)
 uv.lock
 yarn.lock
+
+# Debug and test files
+debug_*
+test_*
+verify_*
+*test.md
+*.debug
+*.trace
+
+# Raw logs and temporary files
+raw_*.json
+nul
+*.bak
+
+# Server batch files
+start_server.bat

@@ -27,7 +27,16 @@
       "Bash(where python)",
       "Bash(git init:*)",
       "Bash(git remote add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(start py start_server.py)",
+      "Bash(true)",
+      "Bash(grep:*)",
+      "WebFetch(domain:openai.github.io)",
+      "Bash(where py)",
+      "Bash(C:UserstanayAppDataLocalMicrosoftWindowsAppspython.exe test_handoff.py)",
+      "Bash(tasklist)",
+      "Bash(netsh:*)"
     ],
     "deny": []
   }

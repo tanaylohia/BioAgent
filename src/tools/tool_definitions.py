@@ -55,29 +55,6 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_paper_details",
-            "description": "Get detailed information about a specific paper including full abstract, citations, and metadata",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "string",
-                        "description": "Paper identifier (DOI or Semantic Scholar ID)"
-                    },
-                    "source": {
-                        "type": "string",
-                        "enum": ["semantic_scholar", "crossref"],
-                        "description": "Source database to fetch from",
-                        "default": "semantic_scholar"
-                    }
-                },
-                "required": ["paper_id"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "search_by_topic",
             "description": "Search papers by topic with optional date range filtering. Useful for finding papers within specific time periods.",
             "parameters": {
@@ -262,4 +239,4 @@ def get_all_tool_names():
             names.append(tool["function"]["name"])
         elif tool.get("type") == "web_search":
             names.append("web_search")
-    return names
+    return names    

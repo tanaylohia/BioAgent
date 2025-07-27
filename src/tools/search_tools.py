@@ -5,6 +5,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import asyncio
 import json
+# PDF downloads disabled - abstracts are sufficient
+# from .pdf_downloader import fetch_full_text_if_available, get_open_access_pdf_url
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +44,15 @@ async def google_academic_search(query: str, limit: int = 10) -> Dict[str, Any]:
         return {"error": "Google Search API not configured", "results": []}
     
     # Academic search parameters optimized for biomedical content
+    # Add site: operators to focus on academic sources
+    academic_query = f"{query} (site:pubmed.ncbi.nlm.nih.gov OR site:nature.com OR site:science.org OR site:cell.com OR site:nejm.org OR site:arxiv.org OR site:biorxiv.org OR site:plos.org OR site:sciencedirect.com)"
+    
     academic_params = {
         "key": api_key,
         "cx": cse_id,
-        "q": query,  # Clean query - let CSE handle the filtering
+        "q": academic_query,
         "num": min(limit, 10),  # Google limits to 10 results per request
         "lr": "lang_en",  # Language restriction to English
-        "fileType": "pdf",  # Prefer PDF documents
-        "exactTerms": "research OR study OR clinical OR trial OR analysis OR review",  # Academic terms
-        "orTerms": "pubmed nature science cell lancet nejm jama bmj plos arxiv biorxiv medrxiv"  # Key sources
     }
     
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -133,7 +135,11 @@ async def search_papers(query: str, limit: int = 10) -> Dict[str, Any]:
             for attempt in range(3):
                 ss_response = await client.get(
                     f"{SEMANTIC_SCHOLAR_API}/paper/search",
-                    params={"query": query, "limit": limit}
+                    params={
+                        "query": query, 
+                        "limit": limit,
+                        "fields": "title,authors,year,abstract,venue,isOpenAccess,tldr,externalIds,citationCount"
+                    }
                 )
                 
                 if ss_response.status_code == 429:
@@ -272,7 +278,252 @@ async def search_by_topic(topic: str, year_start: Optional[int] = None,
         except Exception as e:
             return {"error": str(e)}
 
-# AIDEV-SECTION: PubMed and Preprint Tools
+# AIDEV-SECTION: OpenAlex - Primary Academic Search (Best Abstracts)
+
+async def search_openalex(query: str, limit: int = 50, open_access_only: bool = False) -> Dict[str, Any]:
+    """
+    Search OpenAlex for academic papers with full abstracts.
+    OpenAlex is the successor to Microsoft Academic and provides excellent abstract coverage.
+    
+    Args:
+        query: Search query
+        limit: Maximum results (up to 200 per request)
+        open_access_only: Filter for only open access papers
+        
+    Returns:
+        OpenAlex search results with abstracts
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            params = {
+                "search": query,
+                "per-page": min(limit, 200),  # OpenAlex allows up to 200 per request
+                "select": "id,title,display_name,abstract_inverted_index,authorships,publication_date,doi,open_access,cited_by_count,primary_location,concepts",
+                "sort": "cited_by_count:desc"  # Sort by most cited first
+            }
+            
+            if open_access_only:
+                params["filter"] = "open_access.is_oa:true"
+            
+            response = await client.get("https://api.openalex.org/works", params=params)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                
+                for work in data.get("results", []):
+                    # Reconstruct abstract from inverted index
+                    abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
+                    
+                    # Extract authors
+                    authors = []
+                    for authorship in work.get("authorships", [])[:10]:  # Limit to first 10 authors
+                        author = authorship.get("author", {})
+                        if author.get("display_name"):
+                            authors.append(author["display_name"])
+                    
+                    # Extract venue information
+                    venue = ""
+                    location = work.get("primary_location", {})
+                    if location.get("source", {}).get("display_name"):
+                        venue = location["source"]["display_name"]
+                    
+                    paper = {
+                        "title": work.get("display_name", ""),
+                        "abstract": abstract,
+                        "authors": authors,
+                        "year": work.get("publication_date", "").split("-")[0] if work.get("publication_date") else None,
+                        "doi": work.get("doi", "").replace("https://doi.org/", "") if work.get("doi") else None,
+                        "url": f"https://openalex.org/{work.get('id', '').split('/')[-1]}" if work.get("id") else "",
+                        "venue": venue,
+                        "citations": work.get("cited_by_count", 0),
+                        "openAccess": work.get("open_access", {}).get("is_oa", False),
+                        "source": "OpenAlex"
+                    }
+                    
+                    results.append(paper)
+                
+                return {"results": results, "total": len(results)}
+            else:
+                return {"error": f"OpenAlex search failed: {response.status_code}"}
+                
+        except Exception as e:
+            return {"error": str(e), "results": []}
+
+def _reconstruct_abstract(inverted_index: Dict[str, List[int]]) -> str:
+    """
+    Reconstruct abstract text from OpenAlex inverted index format.
+    
+    Args:
+        inverted_index: Dictionary mapping words to position lists
+        
+    Returns:
+        Reconstructed abstract text
+    """
+    if not inverted_index:
+        return ""
+    
+    try:
+        # Create position to word mapping
+        position_to_word = {}
+        for word, positions in inverted_index.items():
+            for pos in positions:
+                position_to_word[pos] = word
+        
+        # Sort by position and join
+        sorted_positions = sorted(position_to_word.keys())
+        abstract_words = [position_to_word[pos] for pos in sorted_positions]
+        
+        return " ".join(abstract_words)
+    except Exception:
+        return ""
+
+# AIDEV-SECTION: Direct PubMed E-utilities (Official NCBI API)
+
+async def search_pubmed_direct(query: str, limit: int = 20, include_abstracts: bool = True) -> Dict[str, Any]:
+    """
+    Search PubMed directly using NCBI E-utilities for better abstract retrieval.
+    This bypasses Europe PMC and uses the official NCBI API.
+    
+    Args:
+        query: Search query
+        limit: Maximum results
+        include_abstracts: Whether to fetch full abstracts (slower but better)
+        
+    Returns:
+        PubMed search results with abstracts
+    """
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            # Step 1: Search for PMIDs
+            search_params = {
+                "db": "pubmed",
+                "term": query,
+                "retmax": limit,
+                "retmode": "json",
+                "sort": "relevance"
+            }
+            
+            search_response = await client.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                params=search_params
+            )
+            
+            if search_response.status_code != 200:
+                return {"error": f"PubMed search failed: {search_response.status_code}"}
+            
+            search_data = search_response.json()
+            pmids = search_data.get("esearchresult", {}).get("idlist", [])
+            
+            if not pmids:
+                return {"results": [], "total": 0}
+            
+            results = []
+            
+            if include_abstracts and pmids:
+                # Step 2: Fetch detailed records with abstracts
+                fetch_params = {
+                    "db": "pubmed",
+                    "id": ",".join(pmids),
+                    "rettype": "abstract",
+                    "retmode": "xml"
+                }
+                
+                fetch_response = await client.get(
+                    "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                    params=fetch_params
+                )
+                
+                if fetch_response.status_code == 200:
+                    # Parse XML response
+                    import xml.etree.ElementTree as ET
+                    try:
+                        root = ET.fromstring(fetch_response.content)
+                        
+                        for article in root.findall(".//PubmedArticle"):
+                            paper = _parse_pubmed_article(article)
+                            if paper:
+                                results.append(paper)
+                                
+                    except ET.ParseError as e:
+                        logger.error(f"XML parsing error: {e}")
+                        return {"error": f"XML parsing failed: {e}"}
+            
+            return {"results": results, "total": len(results)}
+            
+        except Exception as e:
+            logger.error(f"PubMed direct search error: {e}")
+            return {"error": str(e), "results": []}
+
+def _parse_pubmed_article(article_elem) -> Dict[str, Any]:
+    """Parse a single PubMed article from XML"""
+    try:
+        # Extract PMID
+        pmid_elem = article_elem.find(".//PMID")
+        pmid = pmid_elem.text if pmid_elem is not None else ""
+        
+        # Extract title
+        title_elem = article_elem.find(".//ArticleTitle")
+        title = title_elem.text if title_elem is not None else ""
+        
+        # Extract abstract
+        abstract_parts = []
+        abstract_elem = article_elem.find(".//Abstract")
+        if abstract_elem is not None:
+            for text_elem in abstract_elem.findall(".//AbstractText"):
+                text = text_elem.text or ""
+                label = text_elem.get("Label", "")
+                if label:
+                    abstract_parts.append(f"{label}: {text}")
+                else:
+                    abstract_parts.append(text)
+        
+        abstract = " ".join(abstract_parts) if abstract_parts else ""
+        
+        # Extract authors
+        authors = []
+        author_list = article_elem.find(".//AuthorList")
+        if author_list is not None:
+            for author in author_list.findall(".//Author")[:10]:  # Limit to 10 authors
+                lastname = author.find(".//LastName")
+                forename = author.find(".//ForeName")
+                if lastname is not None:
+                    name = lastname.text
+                    if forename is not None:
+                        name = f"{forename.text} {name}"
+                    authors.append(name)
+        
+        # Extract journal and year
+        journal_elem = article_elem.find(".//Journal/Title")
+        journal = journal_elem.text if journal_elem is not None else ""
+        
+        pub_date = article_elem.find(".//PubDate/Year")
+        year = pub_date.text if pub_date is not None else ""
+        
+        # Extract DOI
+        doi = ""
+        for id_elem in article_elem.findall(".//ArticleId"):
+            if id_elem.get("IdType") == "doi":
+                doi = id_elem.text
+                break
+        
+        return {
+            "pmid": pmid,
+            "title": title,
+            "abstract": abstract,
+            "authors": authors,
+            "journal": journal,
+            "year": year,
+            "doi": doi,
+            "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
+            "source": "PubMed Direct"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error parsing PubMed article: {e}")
+        return None
+
+# AIDEV-SECTION: PubMed and Preprint Tools (Legacy - Keep for backup)
 
 async def search_pubmed(query: str, genes: List[str] = None, diseases: List[str] = None, 
                        limit: int = 20) -> Dict[str, Any]:
@@ -315,16 +566,23 @@ async def search_pubmed(query: str, genes: List[str] = None, diseases: List[str]
                 data = response.json()
                 results = []
                 for article in data.get("resultList", {}).get("result", []):
-                    results.append({
+                    paper = {
                         "pmid": article.get("pmid"),
+                        "pmcid": article.get("pmcid"),  # Add PMC ID for PDF access
                         "title": article.get("title"),
                         "authors": article.get("authorString"),
                         "abstract": article.get("abstractText"),
                         "journal": article.get("journalTitle"),
                         "year": article.get("pubYear"),
                         "doi": article.get("doi"),
+                        "isOpenAccess": article.get("isOpenAccess") == "Y",
                         "source": "PubMed"
-                    })
+                    }
+                    
+                    # AIDEV-NOTE: PDF downloads disabled - abstracts provide sufficient information
+                    # Full text parsing can be done if already available in the response
+                    
+                    results.append(paper)
                 return {"results": results, "total": len(results)}
             else:
                 return {"error": f"PubMed search failed: {response.status_code}"}
@@ -380,15 +638,22 @@ async def search_preprints(query: str, include_biorxiv: bool = True,
                         
                         # Simple keyword matching
                         if query_lower in title or query_lower in abstract:
-                            results[server].append({
+                            paper = {
                                 "title": article.get("title"),
                                 "authors": article.get("authors"),
                                 "abstract": article.get("abstract"),
                                 "doi": article.get("doi"),
                                 "date": article.get("date"),
                                 "category": article.get("category"),
-                                "source": server
-                            })
+                                "url": f"https://www.{server}.org/content/{article.get('doi')}" if article.get('doi') else None,
+                                "source": server,
+                                "isOpenAccess": True  # All preprints are open access
+                            }
+                            
+                            # AIDEV-NOTE: PDF downloads disabled - abstracts are sufficient
+                            # Preprints already include full abstracts in the response
+                            
+                            results[server].append(paper)
                             
                             # Stop if we have enough results
                             if len(results[server]) >= limit:

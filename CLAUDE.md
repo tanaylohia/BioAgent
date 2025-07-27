@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Important Project Conventions
+
+### Prompt Management
+- **ALL agent prompts MUST be defined in `/prompts.py`** (root directory)
+- Never define prompts inline in agent classes
+- Import prompts using: `from prompts import PROMPT_NAME`
+- This ensures centralized prompt management and easy modifications
+
 ## IMPORTANT: Use Anchor comments
 
 Add specially formatted comments throughout the codebase, where appropriate, for yourself as inline knowledge that can be easily `grep`ped for.
@@ -148,3 +156,14 @@ One key element here is that all the research papers received from the tools her
 ## Recent Fixes
 
 - 2024-06-XX: WebSocket route in src/orchestrator/main_fixed.py is now registered before CORS middleware. This prevents CORS from interfering with WebSocket upgrades and resolves HTTP 500 errors before the handler is reached. See AIDEV-NOTE in that file for details.
+
+## Agent Logging System
+
+- 2025-01-26: Added modular logging system for all agents
+  - AIDEV-NOTE: Agent logging can be enabled/disabled via ENABLE_AGENT_LOGGING environment variable
+  - AIDEV-NOTE: Logs are stored in JSON format in the logs/ directory with timestamps
+  - AIDEV-NOTE: All public methods of BioResearcher, BioAnalyser, and SummarizerAgent are automatically logged
+  - AIDEV-NOTE: Use analyze_logs.py to analyze agent performance and errors
+  - AIDEV-NOTE: Use clean_logs.py to remove old logs based on retention policy
+  - AIDEV-NOTE: Logging wrapper classes are in src/utils/agent_logger.py
+  - AIDEV-NOTE: When enabled, SearchAgent automatically uses logged versions of all sub-agents
