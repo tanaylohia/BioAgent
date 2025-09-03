@@ -171,6 +171,22 @@ async def execute_search(task_id: str, request: SearchRequest):
     try:
         logger.info(f"Starting search for task {task_id}: {request.query}")
         
+        # AIDEV-NOTE: Wait for WebSocket connection to be established
+        # Give frontend time to establish WebSocket connection after receiving task_id
+        max_wait = 10  # Maximum 10 seconds to wait for WebSocket
+        wait_interval = 0.5  # Check every 500ms
+        waited = 0
+        
+        while task_id not in ws_manager.active_connections and waited < max_wait:
+            logger.info(f"Waiting for WebSocket connection for task {task_id}... ({waited}s)")
+            await asyncio.sleep(wait_interval)
+            waited += wait_interval
+        
+        if task_id not in ws_manager.active_connections:
+            logger.warning(f"WebSocket connection not established after {max_wait}s for task {task_id}, proceeding anyway")
+        else:
+            logger.info(f"WebSocket connection established for task {task_id}")
+        
         # Send initial progress
         await send_ws_update(task_id, "progress", {
             "progress": 10,
@@ -339,7 +355,9 @@ async def send_ws_update(task_id: str, msg_type: str, data: Dict):
         # Check if WebSocket is connected
         if task_id not in ws_manager.active_connections:
             logger.warning(f"No WebSocket connection for task {task_id}, message type: {msg_type}")
-            return
+            # AIDEV-NOTE: Store message for later delivery or log for debugging
+            # This is expected for the first few messages while connection is being established
+            return False
         
         sent = await ws_manager.send_json(task_id, {
             "type": msg_type,
@@ -352,14 +370,21 @@ async def send_ws_update(task_id: str, msg_type: str, data: Dict):
         else:
             logger.warning(f"Failed to send {msg_type} update for task {task_id}")
             
+        return sent
+            
     except Exception as e:
         logger.error(f"Error in send_ws_update: {e}", exc_info=True)
-        # Send error notification
-        await ws_manager.send_json(task_id, {
-            "type": "error",
-            "data": {"error": str(e)},
-            "timestamp": datetime.utcnow().isoformat()
-        })
+        # Try to send error notification only if connection exists
+        if task_id in ws_manager.active_connections:
+            try:
+                await ws_manager.send_json(task_id, {
+                    "type": "error",
+                    "data": {"error": str(e)},
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            except:
+                pass  # Avoid recursive errors
+        return False
 
 @app.websocket("/ws/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
@@ -371,8 +396,10 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     logger.info(f"WebSocket accepted for task {task_id}")
     
     try:
-        # Register with manager
+        # AIDEV-NOTE: Register with manager BEFORE sending any messages
+        # This ensures the connection is available for execute_search to use
         ws_manager.active_connections[task_id] = websocket
+        logger.info(f"WebSocket registered for task {task_id}, total connections: {len(ws_manager.active_connections)}")
         
         # Send initial connection confirmation
         await websocket.send_json({
@@ -381,7 +408,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
             "timestamp": datetime.utcnow().isoformat()
         })
         
-        logger.info(f"WebSocket registered for task {task_id}, total connections: {len(ws_manager.active_connections)}")
+        logger.info(f"WebSocket ready for task {task_id}, listening for messages...")
         
         # Keep connection alive
         while True:

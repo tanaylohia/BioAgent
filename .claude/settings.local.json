@@ -36,7 +36,8 @@
       "Bash(where py)",
       "Bash(C:UserstanayAppDataLocalMicrosoftWindowsAppspython.exe test_handoff.py)",
       "Bash(tasklist)",
-      "Bash(netsh:*)"
+      "Bash(netsh:*)",
+      "Bash(git pull:*)"
     ],
     "deny": []
   }
